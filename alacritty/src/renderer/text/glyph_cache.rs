@@ -39,13 +39,15 @@ pub struct Glyph {
     pub uv_height: f32,
 }
 
-/// Naïve glyph cache.
-///
-/// Currently only keyed by `char`, and thus not possible to hold different
-/// representations of the same code point.
+/// Character glyph cache with a separate face/size/glyph-ID cache for shaping.
 pub struct GlyphCache {
     /// Cache of buffered glyphs.
     cache: HashMap<GlyphKey, Glyph, RandomState>,
+    pub shaping: bool,
+    #[cfg(not(any(target_os = "macos", windows)))]
+    shaper: super::shaping::Shaper,
+    #[cfg(not(any(target_os = "macos", windows)))]
+    shaped_cache: HashMap<(FontKey, Size, u32), Glyph, RandomState>,
 
     /// Rasterizer for loading new glyphs.
     rasterizer: Rasterizer,
@@ -85,6 +87,11 @@ impl GlyphCache {
         let metrics = GlyphCache::load_font_metrics(&mut rasterizer, font, regular)?;
         Ok(Self {
             cache: Default::default(),
+            shaping: font.shaping,
+            #[cfg(not(any(target_os = "macos", windows)))]
+            shaper: Default::default(),
+            #[cfg(not(any(target_os = "macos", windows)))]
+            shaped_cache: Default::default(),
             rasterizer,
             font_size: font.size(),
             font_key: regular,
@@ -272,6 +279,11 @@ impl GlyphCache {
     pub fn reset_glyph_cache<L: LoadGlyph>(&mut self, loader: &mut L) {
         loader.clear();
         self.cache = Default::default();
+        #[cfg(not(any(target_os = "macos", windows)))]
+        {
+            self.shaped_cache.clear();
+            self.shaper.clear();
+        }
 
         self.load_common_glyphs(loader);
     }
@@ -293,6 +305,7 @@ impl GlyphCache {
 
         info!("Font size changed to {:?} px", font.size().as_px());
 
+        self.shaping = font.shaping;
         self.font_size = font.size();
         self.font_key = regular;
         self.bold_key = bold;
@@ -302,6 +315,36 @@ impl GlyphCache {
         self.builtin_box_drawing = font.builtin_box_drawing;
 
         Ok(())
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    pub fn shape(
+        &mut self,
+        text: &str,
+        key: GlyphKey,
+        rtl: bool,
+    ) -> Option<Vec<super::shaping::ShapedGlyph>> {
+        self.shaper
+            .shape(&mut self.rasterizer, text, key, rtl)
+            .map_err(|err| log::debug!("HarfRust shaping failed: {err}"))
+            .ok()
+    }
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    pub fn shaped_glyph<L: LoadGlyph + ?Sized>(
+        &mut self,
+        font: FontKey,
+        id: u32,
+        loader: &mut L,
+    ) -> Option<Glyph> {
+        let key = (font, self.font_size, id);
+        if let Some(glyph) = self.shaped_cache.get(&key) {
+            return Some(*glyph);
+        }
+        let rasterized = self.rasterizer.get_glyph_by_index(font, self.font_size, id, 'a').ok()?;
+        let glyph = self.load_glyph(loader, rasterized);
+        self.shaped_cache.insert(key, glyph);
+        Some(glyph)
     }
 
     pub fn font_metrics(&self) -> crossfont::Metrics {

@@ -1,0 +1,13 @@
+NotoSansArabic-Regular.ttf is a test-only subset of Noto Sans Arabic,
+Copyright 2022 The Noto Project Authors (https://github.com/notofonts/arabic).
+Licensed under SIL Open Font License 1.1; see LICENSE-Noto.
+
+Source: /usr/share/fonts/noto/NotoSansArabic-Regular.ttf, from noto-fonts.
+Subset generated using fonttools 4.68.0:
+
+pyftsubset NotoSansArabic-Regular.ttf --output-file=subset.ttf \
+  --text=' بببلامیرومسلامِ‌' --layout-features='*' \
+  --name-IDs='*' --name-languages='*'
+
+The subset retains the OpenType layout tables for joining, lam-alef and marks.
+The final character in --text is U+200C ZERO WIDTH NON-JOINER.

@@ -188,6 +188,8 @@ impl Iterator for RenderableContent<'_> {
 #[derive(Clone, Debug)]
 pub struct RenderableCell {
     pub character: char,
+    pub logical_column: usize,
+    pub rtl: bool,
     pub point: Point<usize>,
     pub fg: Rgb,
     pub bg: Rgb,
@@ -295,7 +297,18 @@ impl RenderableCell {
             })
         });
 
-        RenderableCell { flags, character, bg_alpha, point, fg, bg, underline, extra }
+        RenderableCell {
+            flags,
+            character,
+            bg_alpha,
+            point,
+            fg,
+            bg,
+            underline,
+            extra,
+            logical_column: point.column.0,
+            rtl: false,
+        }
     }
 
     /// Check if cell contains any renderable content.
@@ -437,6 +450,10 @@ impl RenderableCursor {
 
     pub fn width(&self) -> NonZeroU32 {
         self.width
+    }
+
+    pub fn set_column(&mut self, column: usize) {
+        self.point.column = Column(column);
     }
 
     pub fn point(&self) -> Point<usize> {

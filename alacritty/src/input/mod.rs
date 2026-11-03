@@ -41,6 +41,7 @@ use crate::config::window::Decorations;
 use crate::config::{
     Action, BindingMode, MouseAction, MouseEvent, SearchAction, UiConfig, ViAction,
 };
+use crate::display::bidi::BidiLine;
 use crate::display::hint::HintMatch;
 use crate::display::window::{ImeInhibitor, Window};
 use crate::display::{Display, SizeInfo};
@@ -462,8 +463,7 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
             self.update_selection_scrolling(y);
         }
 
-        let display_offset = self.ctx.terminal().grid().display_offset();
-        let old_point = self.ctx.mouse().point(&size_info, display_offset);
+        let old_point = self.mouse_point();
 
         let x = x.clamp(0, size_info.width() as i32 - 1) as usize;
         let y = y.clamp(0, size_info.height() as i32 - 1) as usize;
@@ -473,7 +473,7 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
         let inside_text_area = size_info.contains_point(x, y);
         let cell_side = self.cell_side(x);
 
-        let point = self.ctx.mouse().point(&size_info, display_offset);
+        let point = self.mouse_point();
         let cell_changed = old_point != point;
 
         // If the mouse hasn't changed cells, do nothing.
@@ -520,27 +520,32 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
     fn cell_side(&self, x: usize) -> Side {
         let size_info = self.ctx.size_info();
 
-        let cell_x =
-            x.saturating_sub(size_info.padding_x() as usize) % size_info.cell_width() as usize;
-        let half_cell_width = (size_info.cell_width() / 2.0) as usize;
+        let side = Mouse::visual_cell_side(x, &size_info);
 
-        let additional_padding =
-            (size_info.width() - size_info.padding_x() * 2.) % size_info.cell_width();
-        let end_of_grid = size_info.width() - size_info.padding_x() - additional_padding;
-
-        if cell_x > half_cell_width
-            // Edge case when mouse leaves the window.
-            || x as f32 >= end_of_grid
-        {
-            Side::Right
-        } else {
-            Side::Left
+        if self.ctx.config().font.bidi {
+            let point = self.mouse_point();
+            if BidiLine::for_term(self.ctx.terminal(), point.line).is_rtl(point.column.0) {
+                return match side {
+                    Side::Left => Side::Right,
+                    Side::Right => Side::Left,
+                };
+            }
         }
+        side
+    }
+
+    /// Map screen coordinates back to the logical grid used by applications.
+    fn mouse_point(&self) -> Point {
+        let term = self.ctx.terminal();
+        let mut point = self.ctx.mouse().point(&self.ctx.size_info(), term.grid().display_offset());
+        if self.ctx.config().font.bidi {
+            point.column = Column(BidiLine::for_term(term, point.line).logical_col(point.column.0));
+        }
+        point
     }
 
     fn mouse_report(&mut self, button: u8, state: ElementState) {
-        let display_offset = self.ctx.terminal().grid().display_offset();
-        let point = self.ctx.mouse().point(&self.ctx.size_info(), display_offset);
+        let point = self.mouse_point();
 
         // Assure the mouse point is not in the scrollback.
         if point.line < 0 {
@@ -647,8 +652,7 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
             };
 
             // Load mouse point, treating message bar and padding as the closest cell.
-            let display_offset = self.ctx.terminal().grid().display_offset();
-            let point = self.ctx.mouse().point(&self.ctx.size_info(), display_offset);
+            let point = self.mouse_point();
 
             if let MouseButton::Left = button {
                 self.on_left_click(point)
@@ -1094,8 +1098,7 @@ impl<T: EventListener, A: ActionContext<T>> Processor<T, A> {
 
     /// Icon state of the cursor.
     fn cursor_state(&mut self) -> CursorIcon {
-        let display_offset = self.ctx.terminal().grid().display_offset();
-        let point = self.ctx.mouse().point(&self.ctx.size_info(), display_offset);
+        let point = self.mouse_point();
         let hyperlink = self.ctx.terminal().grid()[point].hyperlink();
 
         // Function to check if mouse is on top of a hint.
@@ -1165,6 +1168,49 @@ mod tests {
 
     struct MockEventProxy;
     impl EventListener for MockEventProxy {}
+
+    #[test]
+    fn bidi_mouse_coordinates_and_selection_edges() {
+        let mut cfg = UiConfig::default();
+        cfg.font.bidi = true;
+        let size = SizeInfo::new(200., 20., 10., 10., 0., 0., false);
+        let mut terminal = Term::new(cfg.term_options(), &size, MockEventProxy);
+        for c in "abc سلام 123".chars() {
+            terminal.input(c);
+        }
+
+        let mut mouse = Mouse { x: 41, y: 5, ..Mouse::default() };
+        let mut clipboard = Clipboard::new_nop();
+        let mut message_buffer = MessageBuffer::default();
+        let mut inline_search_state = InlineSearchState::default();
+        let context = ActionContext {
+            terminal: &mut terminal,
+            size_info: &size,
+            mouse: &mut mouse,
+            clipboard: &mut clipboard,
+            message_buffer: &mut message_buffer,
+            modifiers: Default::default(),
+            config: &cfg,
+            inline_search_state: &mut inline_search_state,
+        };
+        let mut processor = Processor::new(context);
+
+        // The first digit is LTR inside the RTL run; its map is not a reversal.
+        assert_eq!(processor.mouse_point().column, Column(9));
+        assert_eq!(processor.cell_side(41), Side::Left);
+
+        // The visual left edge of the rightmost Arabic letter is its logical end.
+        processor.ctx.mouse.x = 111;
+        assert_eq!(processor.mouse_point().column, Column(4));
+        assert_eq!(processor.cell_side(111), Side::Right);
+        processor.ctx.mouse.x = 119;
+        assert_eq!(processor.cell_side(119), Side::Left);
+
+        let disabled_cfg = UiConfig::default();
+        processor.ctx.config = &disabled_cfg;
+        assert_eq!(processor.mouse_point().column, Column(11));
+        assert_eq!(processor.cell_side(119), Side::Right);
+    }
 
     struct ActionContext<'a, T> {
         pub terminal: &'a mut Term<T>,

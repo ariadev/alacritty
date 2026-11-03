@@ -34,6 +34,9 @@ Notable changes to the `alacritty_terminal` crate are documented in its
 
 ### Added
 
+- Experimental `font.bidi` display layout and `font.shaping` Arabic/Persian
+  HarfRust shaping on FreeType platforms (disabled by default)
+
 - Ability to bind `WheelUp` and `WheelDown` in `mouse.bindings`
 - Support TOML 1.1 syntax
 - `window.resize_increments` support on Wayland

@@ -726,8 +726,21 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
             || self.mouse.right_button_state == ElementState::Pressed
         {
             let display_offset = self.terminal.grid().display_offset();
-            let point = self.mouse.point(&self.size_info(), display_offset);
-            self.update_selection(point, self.mouse.cell_side);
+            let mut point = self.mouse.point(&self.size_info(), display_offset);
+            let mut side = self.mouse.cell_side;
+            if self.config.font.bidi {
+                side = Mouse::visual_cell_side(self.mouse.x, &self.size_info());
+                let line = crate::display::bidi::BidiLine::for_term(self.terminal, point.line);
+                point.column = Column(line.logical_col(point.column.0));
+                if line.is_rtl(point.column.0) {
+                    side = match side {
+                        Side::Left => Side::Right,
+                        Side::Right => Side::Left,
+                    };
+                }
+            }
+            self.mouse.cell_side = side;
+            self.update_selection(point, side);
         }
 
         // Scrolling inside Vi mode moves the cursor, so start typing.
@@ -1288,10 +1301,21 @@ impl<'a, N: Notify + 'a, T: EventListener> input::ActionContext<T> for ActionCon
 
         // Load mouse point, treating message bar and padding as the closest cell.
         let display_offset = self.terminal().grid().display_offset();
-        let point = self.mouse().point(&self.size_info(), display_offset);
+        let mut point = self.mouse().point(&self.size_info(), display_offset);
+        let mut cell_side = self.mouse().cell_side;
+        if self.config().font.bidi {
+            cell_side = Mouse::visual_cell_side(self.mouse().x, &self.size_info());
+            let line = crate::display::bidi::BidiLine::for_term(self.terminal(), point.line);
+            point.column = Column(line.logical_col(point.column.0));
+            if line.is_rtl(point.column.0) {
+                cell_side = match cell_side {
+                    Side::Left => Side::Right,
+                    Side::Right => Side::Left,
+                };
+            }
+        }
 
-        let cell_side = self.mouse().cell_side;
-
+        self.mouse_mut().cell_side = cell_side;
         let selection = match &mut self.terminal_mut().selection {
             Some(selection) => selection,
             None => return,
@@ -1802,6 +1826,17 @@ impl Default for Mouse {
 }
 
 impl Mouse {
+    /// Physical half of a screen cell, before bidirectional coordinate mapping.
+    /// Recompute this when scrolling beneath a stationary mouse, since its new
+    /// logical cell can have a different direction from the previous cell.
+    pub fn visual_cell_side(x: usize, size: &SizeInfo) -> Side {
+        let cell_x = x.saturating_sub(size.padding_x() as usize) % size.cell_width() as usize;
+        let half_cell_width = (size.cell_width() / 2.0) as usize;
+        let additional_padding = (size.width() - size.padding_x() * 2.) % size.cell_width();
+        let end_of_grid = size.width() - size.padding_x() - additional_padding;
+        if cell_x > half_cell_width || x as f32 >= end_of_grid { Side::Right } else { Side::Left }
+    }
+
     /// Convert mouse pixel coordinates to viewport point.
     ///
     /// If the coordinates are outside of the terminal grid, like positions inside the padding, the

@@ -217,6 +217,8 @@ impl Renderer {
             Some(RenderableCell {
                 point: Point::new(point.line, point.column + i),
                 character,
+                logical_column: point.column.0 + i,
+                rtl: false,
                 extra: None,
                 flags,
                 bg_alpha: 1.0,

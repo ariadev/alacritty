@@ -13,6 +13,8 @@ mod builtin_font;
 mod gles2;
 mod glsl3;
 pub mod glyph_cache;
+#[cfg(not(any(target_os = "macos", windows)))]
+mod shaping;
 
 use atlas::Atlas;
 pub use gles2::Gles2Renderer;
@@ -62,6 +64,11 @@ pub trait TextRenderer<'a> {
         cells: I,
     ) {
         self.with_api(size_info, |mut api| {
+            #[cfg(not(any(target_os = "macos", windows)))]
+            if glyph_cache.shaping {
+                api.draw_shaped_cells(cells.collect(), glyph_cache, size_info);
+                return;
+            }
             for cell in cells {
                 api.draw_cell(cell, glyph_cache, size_info);
             }
@@ -128,6 +135,137 @@ pub trait TextRenderApi<T: TextRenderBatch>: LoadGlyph {
         // Render batch and clear if it's full.
         if self.batch().full() {
             self.render_batch();
+        }
+    }
+
+    /// Draw backgrounds separately so positioned marks cannot be erased by a
+    /// subsequent cell. Shape logical runs, retaining visual cell coordinates.
+    #[cfg(not(any(target_os = "macos", windows)))]
+    fn draw_shaped_cells(
+        &mut self,
+        cells: Vec<RenderableCell>,
+        cache: &mut GlyphCache,
+        size: &SizeInfo,
+    ) {
+        if !cells.iter().any(|cell| {
+            matches!(cell.character,
+            '\u{0600}'..='\u{06ff}' | '\u{0750}'..='\u{077f}' | '\u{08a0}'..='\u{08ff}')
+        }) {
+            for mut cell in cells {
+                if cell.rtl {
+                    cell.character = unicode_bidi_mirroring::get_mirrored(cell.character)
+                        .unwrap_or(cell.character);
+                }
+                self.draw_cell(cell, cache, size);
+            }
+            return;
+        }
+        for cell in &cells {
+            let mut background = cell.clone();
+            background.character = ' ';
+            background.extra = None;
+            self.draw_cell(background, cache, size);
+        }
+        let mut start = 0;
+        while start < cells.len() {
+            let first = &cells[start];
+            let mut end = start + 1;
+            while end < cells.len() {
+                let prev = &cells[end - 1];
+                let cell = &cells[end];
+                if cell.point.line != first.point.line
+                    || cell.rtl != first.rtl
+                    || cell.logical_column != prev.logical_column + 1
+                    || (cell.rtl && cell.point.column.0 + 1 != prev.point.column.0)
+                    || (!cell.rtl && prev.point.column.0 + 1 != cell.point.column.0)
+                    || cell.flags & Flags::BOLD_ITALIC != first.flags & Flags::BOLD_ITALIC
+                    || cell.flags.contains(Flags::HIDDEN) != first.flags.contains(Flags::HIDDEN)
+                {
+                    break;
+                }
+                end += 1;
+            }
+            let run = &cells[start..end];
+            // Only cursive Arabic-script runs need the new path. ASCII and
+            // unrelated scripts retain their original glyph cache behavior.
+            let arabic = run.iter().any(|cell| {
+                matches!(cell.character,
+                '\u{0600}'..='\u{06ff}' | '\u{0750}'..='\u{077f}' |
+                '\u{08a0}'..='\u{08ff}')
+            });
+            let mut text = String::new();
+            let mut clusters = Vec::new();
+            for (index, cell) in run.iter().enumerate() {
+                clusters.push((text.len(), index));
+                text.push(cell.character);
+                if let Some(marks) = cell.extra.as_ref().and_then(|extra| extra.zerowidth.as_ref())
+                {
+                    text.extend(marks);
+                }
+            }
+            let font_key = match first.flags & Flags::BOLD_ITALIC {
+                Flags::BOLD_ITALIC => cache.bold_italic_key,
+                Flags::ITALIC => cache.italic_key,
+                Flags::BOLD => cache.bold_key,
+                _ => cache.font_key,
+            };
+            let key = GlyphKey { font_key, size: cache.font_size, character: first.character };
+            let shaped = (arabic && !first.flags.contains(Flags::HIDDEN))
+                .then(|| cache.shape(&text, key, first.rtl))
+                .flatten();
+            let mut rendered = false;
+            if let Some(shaped) = shaped {
+                let advance: f32 = shaped.iter().map(|glyph| glyph.x_advance).sum();
+                if advance > 0. {
+                    // Fit a complete run into its allocated grid width. Scaling
+                    // the complete connected run preserves cursive joins.
+                    let scale = run.len() as f32 * size.cell_width() / advance;
+                    let left = run.iter().map(|cell| cell.point.column.0).min().unwrap();
+                    let mut pen = 0.;
+                    let mut pen_y = 0.;
+                    let mut positioned = Vec::with_capacity(shaped.len());
+                    for shaped in shaped {
+                        let Some(mut glyph) =
+                            cache.shaped_glyph(shaped.font_key, shaped.glyph_id, self)
+                        else {
+                            positioned.clear();
+                            break;
+                        };
+                        let cluster = clusters
+                            .partition_point(|&(byte, _)| byte <= shaped.cluster as usize)
+                            .saturating_sub(1);
+                        let mut cell = run[clusters[cluster].1].clone();
+                        cell.bg_alpha = 0.;
+                        let x = left as f32 * size.cell_width() + (pen + shaped.x_offset) * scale;
+                        glyph.left = ((x - cell.point.column.0 as f32 * size.cell_width())
+                            + glyph.left as f32 * scale)
+                            .round() as i16;
+                        glyph.width = (glyph.width as f32 * scale).round() as i16;
+                        glyph.top += (pen_y + shaped.y_offset).round() as i16;
+                        positioned.push((cell, glyph));
+                        pen += shaped.x_advance;
+                        pen_y += shaped.y_advance;
+                    }
+                    if !positioned.is_empty() {
+                        for (cell, glyph) in positioned {
+                            self.add_render_item(&cell, &glyph, size);
+                        }
+                        rendered = true;
+                    }
+                }
+            }
+            if !rendered {
+                for cell in run {
+                    let mut cell = cell.clone();
+                    cell.bg_alpha = 0.;
+                    if cell.rtl {
+                        cell.character = unicode_bidi_mirroring::get_mirrored(cell.character)
+                            .unwrap_or(cell.character);
+                    }
+                    self.draw_cell(cell, cache, size);
+                }
+            }
+            start = end;
         }
     }
 

@@ -57,6 +57,7 @@ use crate::renderer::{self, GlyphCache, Renderer, platform};
 use crate::scheduler::{Scheduler, TimerId, Topic};
 use crate::string::{ShortenDirection, StrShortener};
 
+pub mod bidi;
 pub mod color;
 pub mod content;
 pub mod cursor;
@@ -790,7 +791,13 @@ impl Display {
         let foreground_color = content.color(NamedColor::Foreground as usize);
         let background_color = content.color(NamedColor::Background as usize);
         let display_offset = content.display_offset();
-        let cursor = content.cursor();
+        let mut cursor = content.cursor();
+        let bidi_lines = config.font.bidi.then(|| bidi::BidiLine::viewport(&terminal));
+        if let Some(ref bidi_lines) = bidi_lines {
+            if let Some(line) = bidi_lines.get(cursor.point().line) {
+                cursor.set_column(line.visual_col(cursor.point().column.0));
+            }
+        }
 
         let cursor_point = terminal.grid().cursor.point;
         let total_lines = terminal.grid().total_lines();
@@ -819,7 +826,9 @@ impl Display {
 
         // Add damage from alacritty's UI elements overlapping terminal.
 
-        let requires_full_damage = self.visual_bell.intensity() != 0.
+        let requires_full_damage = config.font.bidi
+            || config.font.shaping
+            || self.visual_bell.intensity() != 0.
             || self.hint_state.active()
             || search_state.regex().is_some();
         if requires_full_damage {
@@ -867,6 +876,16 @@ impl Display {
                     if should_highlight(highlighted_hint) || should_highlight(vi_highlighted_hint) {
                         damage_tracker.frame().damage_point(cell.point);
                         cell.flags.insert(Flags::UNDERLINE);
+                    }
+                }
+
+                if let Some(line) = bidi_lines.as_ref().and_then(|lines| lines.get(cell.point.line))
+                {
+                    cell.rtl = line.is_rtl(cell.logical_column);
+                    cell.point.column = Column(line.visual_col(cell.logical_column));
+                    // HarfRust mirrors shaped RTL runs itself.
+                    if !(config.font.shaping && cfg!(not(any(target_os = "macos", windows)))) {
+                        cell.character = line.mirrored(cell.logical_column, cell.character);
                     }
                 }
 
@@ -1093,7 +1112,11 @@ impl Display {
         }
 
         // Find highlighted hint at mouse position.
-        let point = mouse.point(&self.size_info, term.grid().display_offset());
+        let mut point = mouse.point(&self.size_info, term.grid().display_offset());
+        if config.font.bidi {
+            point.column =
+                Column(bidi::BidiLine::for_term(term, point.line).logical_col(point.column.0));
+        }
         let highlighted_hint = hint::highlighted_at(term, config, point, modifiers);
 
         // Update cursor shape.

@@ -283,6 +283,22 @@ macOS:     { family = _"Menlo"_,     style = _"Regular"_ }
 	the default being at the bottom. Increasing _x_ moves the glyph to the
 	right, increasing _y_ moves the glyph upward.
 
+*bidi* = _true_ | _false_
+
+	Experimental Unicode bidirectional display. Text remains in logical order in
+	the terminal grid and clipboard. Uses a left-to-right paragraph base. Mouse
+	and cursor positions are mapped between logical and visual columns.
+
+	Default: _false_
+
+*shaping* = _true_ | _false_ # _(FreeType platforms only)_
+
+	Experimental Arabic/Persian OpenType shaping using HarfRust. Enable *bidi*
+	as well for right-to-left text. Connected runs are fitted to their terminal
+	cell width. Requires outline fonts; static fonts are recommended.
+
+	Default: _false_
+
 *builtin_box_drawing* = _true_ | _false_
 
 	When _true_, Alacritty will use a custom built-in font for box drawing

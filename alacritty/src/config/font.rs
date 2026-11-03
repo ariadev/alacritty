@@ -42,6 +42,12 @@ pub struct Font {
 
     /// Whether to use the built-in font for box drawing characters.
     pub builtin_box_drawing: bool,
+
+    /// Experimental bidirectional terminal display.
+    pub bidi: bool,
+
+    /// Experimental HarfRust shaping on FreeType platforms.
+    pub shaping: bool,
 }
 
 impl Font {
@@ -80,6 +86,8 @@ impl Default for Font {
     fn default() -> Font {
         Self {
             builtin_box_drawing: true,
+            bidi: false,
+            shaping: false,
             glyph_offset: Default::default(),
             use_thin_strokes: Default::default(),
             bold_italic: Default::default(),

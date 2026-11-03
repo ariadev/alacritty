@@ -9,6 +9,23 @@
        src="https://raw.githubusercontent.com/alacritty/alacritty/master/extra/promo/alacritty-readme.png">
 </p>
 
+## Experimental Arabic/Persian fork
+
+This independent fork adds opt-in HarfRust OpenType shaping on FreeType platforms
+and Unicode bidirectional display. It is experimental: exact ligature caret
+placement, shaping across soft wraps, application-controlled bidi modes and
+cross-platform shaping remain incomplete. See the [research and support checklist](docs/rtl-shaping.md).
+
+```sh
+cargo run --release -p alacritty -- --config-file docs/rtl/alacritty.toml
+# Inside the new terminal:
+bash scripts/rtl-demo.sh
+```
+
+The original renderer remains the default; enable both `font.bidi` and
+`font.shaping` to try the new path. No system installation or desktop configuration
+changes are required.
+
 ## About
 
 Alacritty is a modern terminal emulator that comes with sensible defaults, but

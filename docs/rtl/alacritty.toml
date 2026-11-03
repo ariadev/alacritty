@@ -1,0 +1,11 @@
+# Run: cargo run -p alacritty -- --config-file docs/rtl/alacritty.toml
+[font]
+bidi = true
+shaping = true
+size = 18.0
+# Choose an installed static outline font covering Arabic and Persian.
+[font.normal]
+family = "Noto Sans Mono"
+[window]
+title = "Alacritty HarfRust RTL preview"
+dimensions = { columns = 90, lines = 28 }
